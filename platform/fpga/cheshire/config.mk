@@ -21,7 +21,7 @@ ifeq ($(PLATFORM_RISCV_XLEN), 32)
  FW_JUMP_ADDR=0x80200000
  endif
 # TODO: this is a cancerous workaround; set this correctly, ideally built!
-FW_JUMP_FDT_ADDR=0x80800000
+FW_JUMP_FDT_ADDR=0x82200000
 
 # Firmware with payload configuration.
 FW_PAYLOAD=y
@@ -34,5 +34,5 @@ else
   FW_PAYLOAD_OFFSET=0x200000
 endif
 # TODO: this is a cancerous workaround; set this correctly, ideally built!
-FW_PAYLOAD_FDT_ADDR=0x80800000
+FW_PAYLOAD_FDT_ADDR=0x82200000
 FW_PAYLOAD_ALIGN=0x1000
