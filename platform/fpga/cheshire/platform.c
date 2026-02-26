@@ -24,19 +24,14 @@
 #define CHESHIRE_UART_REG_SHIFT	      	2
 #define CHESHIRE_UART_REG_WIDTH	      	4
 #define CHESHIRE_PLIC_ADDR	      		0x04000000
-#define CHESHIRE_PLIC_NUM_SOURCES     	59
-#define CHESHIRE_HART_COUNT	      		1
+#define CHESHIRE_PLIC_NUM_SOURCES     	58
+#define CHESHIRE_HART_COUNT	      		2
 #define CHESHIRE_CLINT_ADDR	      		0x02040000
 #define CHESHIRE_ACLINT_MTIMER_FREQ		1000000
 #define CHESHIRE_ACLINT_MSWI_ADDR     	(CHESHIRE_CLINT_ADDR + 0x0)
 #define CHESHIRE_ACLINT_MTIMER_ADDR   	(CHESHIRE_CLINT_ADDR + 0xbff8)
 #define CHESHIRE_ACLINT_MTIMECMP_ADDR 	(CHESHIRE_CLINT_ADDR + 0x4000)
 
-#define CHESHIRE_VGA_ADDR             0x03007000
-#define CHESHIRE_FB_ADDR              0xA0000000
-#define CHESHIRE_FB_HEIGHT            480
-#define CHESHIRE_FB_WIDTH             640
-#define CHESHIRE_FB_SIZE			  (CHESHIRE_FB_WIDTH * CHESHIRE_FB_HEIGHT * 2)
 
 static struct platform_uart_data uart = {
 	CHESHIRE_UART_ADDR,
@@ -100,62 +95,6 @@ static int cheshire_final_init(bool cold_boot)
 	fdt = fdt_get_address();
 	fdt_fixups(fdt);
 
-	// Generate test pattern for screen
-	uint16_t RGB[8] = {
-		0xffff, //White
-		0xffe0, //Yellow
-		0x07ff, //Cyan
-		0x07E0, //Green
-		0xf81f, //Magenta
-		0xF800, //Red
-		0x001F, //Blue
-		0x0000, //Black
-	};
-	int col_width = CHESHIRE_FB_WIDTH / 8;
-
-    volatile uint16_t *fb = (volatile uint16_t*)(void*)(uintptr_t) CHESHIRE_FB_ADDR;
-
-    for (int i=0; i < CHESHIRE_FB_HEIGHT; i++) {
-        for (int j=0; j < CHESHIRE_FB_WIDTH; j++) {
-            fb[CHESHIRE_FB_WIDTH * i + j] = RGB[j / col_width];
-        }
-    }
-
-	// Pointer array to acces VGA control registers.
-	// Every index step increases the pointer by 32bit
-	volatile uint32_t *vga = (volatile uint32_t*)(void*)(uintptr_t) CHESHIRE_VGA_ADDR;
-
-    // Initialize VGA controller and populate framebuffer
-    // Clk div
-    vga[1] = 0x2;        // 8 for Sim, 2 for FPGA
-    
-    // Hori: Visible, Front porch, Sync, Back porch
-    vga[2] = 0x280;
-    vga[3] = 0x10;
-    vga[4] = 0x60;
-    vga[5] = 0x30;
-
-    // Vert: Visible, Front porch, Sync, Back porch
-    vga[6] = 0x1e0;
-    vga[7] = 0xA;
-    vga[8] = 0x2;
-    vga[9] = 0x21;
-
-    // Framebuffer start address
-    vga[10] = CHESHIRE_FB_ADDR;     // Low 32 bit
-    vga[11] = 0x0;            // High 32 bit
-
-    // Framebuffer size
-    vga[12] = CHESHIRE_FB_WIDTH*CHESHIRE_FB_HEIGHT*2;      // 640*480 pixel a 2 byte/pixel
-
-    // Burst length
-    vga[13] = 16;           // 64b * 16 = 128B Bursts
-
-    // 0: Enable
-    // 1: Hsync polarity (Active Low  = 0)
-    // 2: Vsync polarity (Active Low  = 0)
-    vga[0] = 0x1;    
-
 	return 0;
 }
 
@@ -203,6 +142,9 @@ static int cheshire_irqchip_init(bool cold_boot)
 	u32 hartid = current_hartid();
 	int ret;
 
+	// sbi_printf("Cheshire: Initializing IRQ chip for HART %u (%s boot)\n", 
+    //             hartid, cold_boot ? "cold" : "warm");
+
 	if (cold_boot) {
 		ret = plic_cold_irqchip_init(&plic);
 		if (ret)
@@ -242,17 +184,53 @@ static int cheshire_timer_init(bool cold_boot)
 
 	return aclint_mtimer_warm_init();
 }
+/*
+ * e-call to flush cache.
+ */
+// static int cheshire_vendor_ext_provider(long extid, long funcid,
+//     const struct sbi_trap_regs *regs,
+//     unsigned long *out_value,
+//     struct sbi_trap_info *out_trap)
+// {
+//     if (extid == 0x09000001 && funcid == 0) {
+// 		sbi_printf("Cache flush ecall received from HART %d\n", current_hartid());
+//         // Flush CVA6 dcache by disabling then re-enabling.
+//         // Must be done from M-mode since CSR 0x7C1 is M-mode only.
+//         asm volatile("csrrwi x0, 0x7C1, 0x0 \n\t" : : : "memory");
+//         asm volatile("fence rw, rw" : : : "memory");
+//         asm volatile("csrrwi x0, 0x7C1, 0x1 \n\t" : : : "memory");
+//         *out_value = 0;
+//         return SBI_SUCCESS;
+//     }
+//     return SBI_ERR_NOT_SUPPORTED;
+// }
+
+// Use the code below in your s-mode space to trigger a cache flush ecall from s-mode:
+// #define SBI_EXT_DCACHE_FLUSH_EID  0x09000001
+// #define SBI_EXT_DCACHE_FLUSH_FID  0
+
+// static inline void sbi_dcache_flush(void)
+// {
+//     register unsigned long a0 asm("a0") = 0;
+//     register unsigned long a6 asm("a6") = SBI_EXT_DCACHE_FLUSH_FID;
+//     register unsigned long a7 asm("a7") = SBI_EXT_DCACHE_FLUSH_EID;
+//     asm volatile("ecall"
+//         : "+r"(a0)
+//         : "r"(a6), "r"(a7)
+//         : "memory");
+// }
 
 /*
  * Platform descriptor.
  */
 const struct sbi_platform_operations platform_ops = {
-	.early_init = cheshire_early_init,
-	.final_init = cheshire_final_init,
-	.console_init = cheshire_console_init,
-	.irqchip_init = cheshire_irqchip_init,
-	.ipi_init = cheshire_ipi_init,
-	.timer_init = cheshire_timer_init,
+    .early_init          = cheshire_early_init,
+    .final_init          = cheshire_final_init,
+    .console_init        = cheshire_console_init,
+    .irqchip_init        = cheshire_irqchip_init,
+    .ipi_init            = cheshire_ipi_init,
+    .timer_init          = cheshire_timer_init,
+    // .vendor_ext_provider = cheshire_vendor_ext_provider,
 };
 
 const struct sbi_platform platform = {
